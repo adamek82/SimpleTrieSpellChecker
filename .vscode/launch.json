@@ -1,0 +1,16 @@
+{
+    "version": "2.0.0",
+    "configurations": [
+        {
+            "name": "Launch CodeForces (auto)",
+            "type": "cppvsdbg",  // ✅ Use MSVC debugger
+            "request": "launch",
+            "program": "${workspaceFolder}/bin/${command:cmake.buildType}/SimpleTrieSpellChecker.exe",
+            "args": [],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}",
+            "environment": [],
+            "console": "integratedTerminal",
+        }
+    ]
+}
