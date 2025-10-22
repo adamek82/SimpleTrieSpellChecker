@@ -69,11 +69,9 @@ char *strupr_local(char *s);
 /* Diagnostics helper; aborts with a message. */
 void Error(char *s);
 
-/* Create a one-letter non-leaf node (letters = {ch}). */
-NonLeafPtr CreateNonLeaf(char ch);
-
-/* Create/attach a leaf under parent `p` on edge `ch`, storing `suffix` (copied). */
-void CreateLeaf(char ch, char *suffix, NonLeafPtr p);
+/* Create a fresh trie and seed it with the FIRST already UPPERCASED word.
+ * Returns the root (non-leaf). */
+NonLeafPtr TrieCreateWithFirstWord(const char *upper_word);
 
 /* Insert an UPPERCASED word into the trie rooted at `root`.
  * Handles splitting of leaves; keeps structure minimal:

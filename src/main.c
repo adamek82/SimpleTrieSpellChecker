@@ -23,8 +23,7 @@ int main(void) {
     if (fscanf(words, "%255s", word) != 1) Error("empty `dictionary`");
 
     strupr_local(word);
-    root = CreateNonLeaf(*word);           /* seed: root is non-leaf */
-    CreateLeaf(*word, word + 1, root);     /* attach first word as leaf */
+    root = TrieCreateWithFirstWord(word);  /* seed tree with the first word */
 
     while (fscanf(words, "%255s", word) == 1)
         TrieInsert(strupr_local(word), root);

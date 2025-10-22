@@ -64,7 +64,8 @@ static void AddCell(char ch, NonLeafPtr p, int stop) {
     free(old_ptrs);
 }
 
-NonLeafPtr CreateNonLeaf(char ch) {
+/* internal: create non-leaf with a single outgoing letter `ch` */
+static NonLeafPtr CreateNonLeaf(char ch) {
     NonLeafPtr p = (NonLeafPtr)calloc(1, sizeof(*p));
     if (!p) Error("out of memory: CreateNonLeaf");
 
@@ -79,7 +80,7 @@ NonLeafPtr CreateNonLeaf(char ch) {
     return p;
 }
 
-/* create an empty non-leaf (no outgoing letters) */
+/* internal: create an empty non-leaf (no outgoing letters) */
 static NonLeafPtr CreateEmptyNonLeaf(void) {
     NonLeafPtr p = (NonLeafPtr)calloc(1, sizeof(*p));
     if (!p) Error("out of memory: CreateEmptyNonLeaf");
@@ -88,7 +89,8 @@ static NonLeafPtr CreateEmptyNonLeaf(void) {
     return p;
 }
 
-void CreateLeaf(char ch, char *suffix, NonLeafPtr p) {
+/* internal: create/attach a leaf under edge `ch` with copied `suffix` */
+static void CreateLeaf(char ch, char *suffix, NonLeafPtr p) {
     int pos = Position(p, ch);
     int len = !p->letters ? 0 : (int)strlen(p->letters);
 
@@ -107,6 +109,15 @@ void CreateLeaf(char ch, char *suffix, NonLeafPtr p) {
         AddCell(ch, p, pos);
     }
     p->ptrs[pos] = (NonLeafPtr)lf;
+}
+
+/* public: create a fresh trie seeded with the first UPPERCASED word */
+NonLeafPtr TrieCreateWithFirstWord(const char *upper_word) {
+    if (!upper_word || !*upper_word) Error("TrieCreateWithFirstWord: empty word");
+    NonLeafPtr root = CreateNonLeaf(*upper_word);      /* seed root as non-leaf on first char */
+    /* attach remaining tail (may be empty string if one-letter word) */
+    CreateLeaf(*upper_word, (char*)upper_word + 1, root);
+    return root;
 }
 
 /* ========================= *
