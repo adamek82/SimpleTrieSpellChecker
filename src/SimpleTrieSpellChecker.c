@@ -21,6 +21,7 @@ char *strupr_local(char *s) {
 
 /* Find position of `ch` in p->letters (sorted). Returns index or notFound. */
 static int Position(NonLeafPtr p, char ch) {
+    if (!p->letters) return notFound;
     int len = (int)strlen(p->letters);
     for (int i = 0; i < len; ++i)
         if (p->letters[i] == ch) return i;
@@ -34,7 +35,7 @@ static int Position(NonLeafPtr p, char ch) {
 /* Expand letters/ptrs by inserting edge `ch` at index `stop`.
  * Copies both lower (<stop) and upper (>=stop) portions from old buffers. */
 static void AddCell(char ch, NonLeafPtr p, int stop) {
-    int len = (int)strlen(p->letters);
+    int len = !p->letters ? 0 : (int)strlen(p->letters);
     char *old_letters = p->letters;
     NonLeafPtr *old_ptrs = p->ptrs;
 
@@ -78,9 +79,18 @@ NonLeafPtr CreateNonLeaf(char ch) {
     return p;
 }
 
+/* create an empty non-leaf (no outgoing letters) */
+static NonLeafPtr CreateEmptyNonLeaf(void) {
+    NonLeafPtr p = (NonLeafPtr)calloc(1, sizeof(*p));
+    if (!p) Error("out of memory: CreateEmptyNonLeaf");
+    p->kind = !leaf;
+    p->EndOfWord = !yes;
+    return p;
+}
+
 void CreateLeaf(char ch, char *suffix, NonLeafPtr p) {
     int pos = Position(p, ch);
-    int len = (int)strlen(p->letters);
+    int len = !p->letters ? 0 : (int)strlen(p->letters);
 
     LeafPtr lf = (LeafPtr)malloc(sizeof(*lf));
     if (!lf) Error("out of memory: CreateLeaf node");
@@ -148,23 +158,49 @@ void TrieSideView(int depth, NonLeafPtr p, char *prefix) {
 }
 
 /* ===================================================================================== *
- * Insert (with fixed prefix cases)                                                      *
+ * Insert (with leaf splitting and prefix cases; supports empty non-leaves)              *
  * ===================================================================================== *
  *                                                                                       *
- * When descending edge `*word` hits a LEAF (holding `lf->word`), we split:              *
- * - Build a chain of non-leaves for the SHARED prefix between (word[1..] and lf->word)  *
- *   by reassigning the parent's child pointer (this disconnects the old leaf).          *
- * - Then there are 3 outcomes:                                                          *
- *   (A) new word ends at this node (new is prefix of old) => mark EndOfWord here,       *
- *       and attach only OLD remainder as one branch; free the old leaf.                 *
- *   (B) old leaf ends at this node (old is prefix of new) => mark EndOfWord here,       *
- *       and attach only NEW remainder as one branch; free the old leaf.                 *
- *   (C) both continue with different next letters => attach TWO branches                *
- *       (one for NEW remainder, one for OLD remainder); free the old leaf.              *
+ * When descending edge `*word` lands on a LEAF (holding `lf->word`), we must split it:  *
  *                                                                                       *
- * Importantly, in (A) and (B) we DO NOT create an extra non-leaf level.                 *
- * EndOfWord must be set on the CURRENT node `p`, keeping the trie minimal.              *
+ * 1) Walk the SHARED prefix between (word[1..] and lf->word) using a do/while loop.     *
+ *    On each iteration we reassign the parent's child pointer. There are three          *
+ *    possible outcomes at the current split position `offset`:                          *
+ *                                                                                       *
+ *    (A) The NEW word finishes exactly here (new is a prefix of the OLD leaf):          *
+ *        - Replace the leaf with an EMPTY non-leaf (CreateEmptyNonLeaf).                *
+ *        - Mark EndOfWord on this new node (this is where the NEW word ends).           *
+ *        - Attach exactly ONE branch for the remaining OLD tail:                        *
+ *          edge = lf->word[offset], suffix = lf->word + offset + 1.                     *
+ *        - Free the old leaf and return.                                                *
+ *                                                                                       *
+ *    (B) The OLD leaf finishes exactly here (old is a prefix of the NEW word):          *
+ *        - Replace the leaf with an EMPTY non-leaf (CreateEmptyNonLeaf).                *
+ *        - Mark EndOfWord on this new node (this preserves the OLD word end).           *
+ *        - Attach exactly ONE branch for the remaining NEW tail:                        *
+ *          edge = word[offset+1], suffix = word + offset + 2.                           *
+ *        - Free the old leaf and return.                                                *
+ *                                                                                       *
+ *    (C) Both sides still continue and the next letters differ:                         *
+ *        - First, the loop installs a chain of seeded non-leaves for the shared         *
+ *          letters (CreateNonLeaf(word[offset+1]) each step).                           *
+ *        - After the loop (at the first mismatch), attach TWO branches:                 *
+ *          NEW branch: edge = word[offset+1], suffix = word + offset + 2                *
+ *          OLD branch: edge = lf->word[offset], suffix = lf->word + offset + 1          *
+ *        - Free the old leaf and return.                                                *
+ *                                                                                       *
+ * Note about invariants:                                                                *
+ * - Our traditional invariant is: letters is a valid NUL-terminated string and          *
+ *   every letter position has a matching child pointer (or we check for NULL).          *
+ * - In prefix cases (A) and (B) we intentionally create an EMPTY non-leaf:              *
+ *   letters == NULL and ptrs == NULL (temporarily breaking the invariant).              *
+ *   This is OK because we immediately call CreateLeaf(...) on that node, which          *
+ *   allocates letters/ptrs and inserts the first outgoing edge. By the time             *
+ *   TrieInsert returns, the invariant is restored.                                      *
+ * - To support this, helper functions (Position, AddCell, CreateLeaf) were made         *
+ *   tolerant to letters == NULL (treating it as length 0).                              *
  * ===================================================================================== */
+
 void TrieInsert(char *word, NonLeafPtr root) {
     NonLeafPtr p = root;
     int pos;
@@ -200,54 +236,58 @@ void TrieInsert(char *word, NonLeafPtr root) {
             int offset = 0;
 
             /* Build non-leaves along the shared prefix.
-             * We repeatedly REPLACE the parent's child pointer with a new non-leaf,
-             * disconnecting `lf` (which we'll free later). */
+             * We repeatedly REPLACE the parent's child pointer while we still match.
+             * There are two early prefix exits (A) and (B) below. */
             do {
-                pos = Position(p, word[offset]); /* edge label at this parent */
+                /* `pos` is the index of the CURRENT edge at the CURRENT parent `p`.
+                   `word[offset]` is the incoming edge label at this level. */
+                pos = Position(p, word[offset]);
 
-				/* CASE A: new word finishes at this split point (new is a prefix of old)
-				Example (after descending first letter): word="ARE", lf->word="REA..." */
-				if ((int)strlen(word) == offset + 1) {
-					/* Replace the leaf with a non-leaf for the LAST shared letter (word[offset]).
-					EndOfWord must be set on THIS new node to mark the end of the NEW word. */
-					p->ptrs[pos] = CreateNonLeaf(word[offset]);
-					p->ptrs[pos]->EndOfWord = yes;
+                /* CASE A: the NEW word ends at this split point (new is a prefix of OLD)
+                   Example (after descending the very first letter): word="ARE", lf->word="REA..." */
+                if ((int)strlen(word) == offset + 1) {
+                    /* Replace the LEAF with an EMPTY non-leaf:
+                       we temporarily allow letters == NULL / ptrs == NULL on this node. */
+                    p->ptrs[pos] = CreateEmptyNonLeaf();
+                    p->ptrs[pos]->EndOfWord = yes;   /* the NEW word ends exactly here */
 
-					/* Attach the remaining OLD tail as a single branch:
-					edge lf->word[offset] with leaf suffix lf->word + offset + 1 */
-					CreateLeaf(lf->word[offset], lf->word + offset + 1, p->ptrs[pos]);
+                    /* Immediately attach the remaining OLD tail as a single branch.
+                       This call allocates letters/ptrs and inserts the first edge,
+                       restoring the node's invariant before we return. */
+                    CreateLeaf(lf->word[offset], lf->word + offset + 1, p->ptrs[pos]);
 
-					/* The old leaf is now disconnected: free it. */
-					free(lf->word);
-					free(lf);
-					return;
-				}
+                    /* The old leaf was disconnected; free it and finish. */
+                    free(lf->word);
+                    free(lf);
+                    return;
+                }
 
-				/* CASE B: old leaf finishes at this split point (old is a prefix of new)
-				Example (after descending first letter): word="AREA", lf->word="RE" */
-				else if ((int)strlen(lf->word) == offset) {
-					/* Replace the leaf with a non-leaf for the NEXT letter of the NEW word (word[offset+1]).
-					EndOfWord must be set on THIS new node to preserve the end of the OLD word. */
-					p->ptrs[pos] = CreateNonLeaf(word[offset + 1]);
-					p->ptrs[pos]->EndOfWord = yes;
+                /* CASE B: the OLD leaf ends at this split point (old is a prefix of NEW)
+                   Example (after descending the very first letter): word="AREA", lf->word="RE" */
+                else if ((int)strlen(lf->word) == offset) {
+                    /* Replace the LEAF with an EMPTY non-leaf (same temporary relaxation). */
+                    p->ptrs[pos] = CreateEmptyNonLeaf();
+                    p->ptrs[pos]->EndOfWord = yes;   /* preserve the OLD word end here */
 
-					/* Attach the remaining NEW tail as a single branch:
-					edge word[offset+1] with leaf suffix word + offset + 2 */
-					CreateLeaf(word[offset + 1], word + offset + 2, p->ptrs[pos]);
+                    /* Attach the remaining NEW tail as a single branch.
+                       CreateLeaf(...) restores letters/ptrs on this node. */
+                    CreateLeaf(word[offset + 1], word + offset + 2, p->ptrs[pos]);
 
-					/* The old leaf is now disconnected: free it. */
-					free(lf->word);
-					free(lf);
-					return;
-				}
+                    /* Free the disconnected old leaf and finish. */
+                    free(lf->word);
+                    free(lf);
+                    return;
+                }
 
-                /* Otherwise, still in shared-prefix territory:
-                 * replace parent's child with a non-leaf for the NEXT new letter. */
+                /* Otherwise we are still inside the shared-prefix region:
+                   seed the NEXT letter as a non-leaf and descend into it.
+                   This variant (CreateNonLeaf(letter)) keeps the usual invariant,
+                   because it allocates letters/ptrs with exactly one outgoing edge. */
                 p->ptrs[pos] = CreateNonLeaf(word[offset + 1]);
                 p = p->ptrs[pos];
                 ++offset;
 
-            } while (word[offset] == lf->word[offset - 1]);
+            } while (word[offset] == lf->word[offset - 1]);  /* continue while letters match */
 
 			/* step back to the last shared position */
 			offset--;
@@ -272,24 +312,24 @@ void TrieInsert(char *word, NonLeafPtr root) {
     }
 }
 
-/* ===============================================
- * Suggestions: Damerau-Levenshtein distance <= 1 
- * ===============================================
- *
- * We allow exactly one edit among:
- *  - substitution,
- *  - insertion (extra char in input),
- *  - deletion (missing char in input),
- *  - adjacent transposition (swap of i and i+1).
- *
- * Implementation strategy:
- *  - DFS over the trie, carrying:
- *      - input index (idx),
- *      - current dictionary prefix (in a char buffer),
- *      - edits_used (0 or 1),
- *  - When encountering a leaf, validate the remaining tails using
- *    a tight tail-matcher that accepts <=1 edit (considering current edits_used).
- */
+/* =============================================================================== *
+ * Suggestions: Damerau-Levenshtein distance <= 1                                  *
+ * =============================================================================== *
+ *                                                                                 *
+ * We allow exactly one edit among:                                                *
+ *  - substitution,                                                                *
+ *  - insertion (extra char in input),                                             *
+ *  - deletion (missing char in input),                                            *
+ *  - adjacent transposition (swap of i and i+1).                                  *
+ *                                                                                 *
+ * Implementation strategy:                                                        *
+ *  - DFS over the trie, carrying:                                                 *
+ *      - input index (idx),                                                       *
+ *      - current dictionary prefix (in a char buffer),                            *
+ *      - edits_used (0 or 1),                                                     *
+ *  - When encountering a leaf, validate the remaining tails using                 *
+ *    a tight tail-matcher that accepts <=1 edit (considering current edits_used). *
+ * =============================================================================== */
 
 static void add_suggestion(SuggestBox *box, const char *w) {
     for (int i = 0; i < box->count; ++i)
