@@ -110,7 +110,6 @@ Expected behavior:
 
 - **Prefix split correctness:** No extra “dummy” levels; `EndOfWord` set exactly on the split node.  
 - **Memory safety:** Old leaves are freed after being disconnected; helpers handle temporary empty non-leaves (`letters == NULL`).  
-- **Off-by-one in split loop:** Added the missing `offset--` before branching at the first mismatch.  
 - **Private API:** Internal helpers (`CreateNonLeaf`, `CreateLeaf`, `CreateEmptyNonLeaf`) are `static`; header exposes only what clients need.  
 - **Suggestions:** Added Damerau-1 suggestion engine with tight tail matching.
 
